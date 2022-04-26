@@ -1,0 +1,27 @@
+# Language server
+.cache
+compile_commands.json
+
+# IDE
+.vscode
+
+# Python binaries
+__pycache__
+*.pyc
+*.pyd
+
+# Common binaries
+*.o
+*.so
+*.lib
+*.exe
+*.dll
+
+# Common binary directories
+build
+bin
+install
+out
+
+# VS Code settings
+*.json
