@@ -2,29 +2,26 @@
 // https://github.com/OneLoneCoder/olcPixelGameEngine/wiki
 //
 #define OLC_PGE_APPLICATION
-#include "olcPixelGameEngine.h"
-#include "custom_functions.h"
 
-// Connect nodes together with pointers instead of conectivity matrix (add custom classes).
-// Check all self-intersections before running the visibility polygon.
-// Add automatic self-intersection detection.
-// Check all segments for clipping with screen boundaries and save all the points in a vector.
+#include "custom_functions.h"
+#include "visibility_polygon.h"
+
+
+// Use "vf2d" and "vi2d" where appropriate
 // Add bounding box method.
 // Add convex polygon method.
 // Change container from a vector to list (if it is better).
-// Multiple line segment will be the common structure, while RECTANGE and n-GONES will be derived from it.
-// Shape should be also able to split.
 // Add posibility to select multiple nodes at once.
-// Optimize the visibility polygon algorithm and solve problems.
-// Fix visibility of object that are beyond screen boundaries (diagonal lines)
 // Show node numbering and show line numbering
 
 
 // Global variables
 const int32_t mainScreenWidth = 1000;
-const int32_t mainScreenHeight = 600;
+const int32_t mainScreenHeight = 500;
 const int32_t mainToolbarWidth = 185;
 const int32_t mainPixelSize = 2;
+
+
 
 
 class Plane2D : public olc::PixelGameEngine
@@ -32,7 +29,7 @@ class Plane2D : public olc::PixelGameEngine
 public:
 	Plane2D()
 	{
-		sAppName = "2D Shadow Casting";
+		sAppName = "SIMPLE CAD APPLICATION";
 	}
 
 private: // Drawing rutine coordinate transformations
@@ -65,6 +62,7 @@ private: // Private variables
 	// Display information flags
 	bool bDisplayCoordinateSystem = true;
 	bool bDisplayLineSegmentInfo = false;
+	bool bDisplaySelfIntersections = false;
 
 	// Other flags
 	bool bIsSelected = false;
@@ -77,9 +75,9 @@ private: // Private variables
 	// Drawing modes
 	int nMode = 0;
 
-	// Mouse positions
-	olc::vf2d vMP_S; // Screen space
-	olc::vf2d vMP_W; // World space
+	// Mouse positions in [S] screen and [W] world space
+	olc::vf2d vMP_S; 
+	olc::vf2d vMP_W;
 	olc::vf2d vMP_S_previous;
 	olc::vf2d vMP_W_previous;
 
@@ -92,14 +90,7 @@ private: // Private variables
 	// Bounding box in world space
 	olc::vf2d vTL_W, vTR_W, vBL_W, vBR_W;
 
-	// Extended bounding box in screen space
-	olc::vf2d vTL_S_ext = vTL_S + olc::vf2d{ -20.0f, -20.0f };
-	olc::vf2d vTR_S_ext = vTR_S + olc::vf2d{  20.0f, -20.0f };
-	olc::vf2d vBL_S_ext = vBL_S + olc::vf2d{ -20.0f,  20.0f };
-	olc::vf2d vBR_S_ext = vBR_S + olc::vf2d{  20.0f,  20.0f };
-
-
-	// Selected geometry and node
+	// Currently node and segment
 	int i_segment = -1;
 	int i_node = -1;
 	int i_node_start = -1;
@@ -109,7 +100,16 @@ private: // Private variables
 	// Geometry
 	std::vector<olc::vf2d> nodes;
 	std::vector<std::array<int, 2>> segments;
-	std::vector<olc::vf2d> intersections;
+
+
+
+	// DEBUG - ball geometry
+	float fBallRadius = 10.0f;
+	olc::vf2d vBallPosition;
+
+
+
+
 
 	// Colors
 	olc::Pixel color_ToolbarBackground = olc::BLACK;
@@ -121,20 +121,17 @@ private: // Private variables
 	olc::Pixel color_Selection = olc::GREEN;
 	olc::Pixel color_TempLine = olc::YELLOW;
 	olc::Pixel color_TempNode = olc::YELLOW;
+	olc::Pixel color_Intersection = olc::RED;
 	olc::Pixel color_VisibilityPolygon = olc::DARK_YELLOW;
 
-
 	// Layers
+	int nLayerBouncingBall = 0;
 	int nLayerVisibilityPolygon = 0;
 	int nLayerToolbar = 0;
 	int nLayerBackground = 0;
 	int nLayerGeometry = 0;
 	int nLayerAxis = 0;
 	int nLayerCursor = 0;
-
-
-
-
 
 
 public:
@@ -150,7 +147,6 @@ public:
 		// TODO : Optimize this
 		nodes.reserve(16);
 		segments.reserve(16);
-		intersections.reserve(16);
 
 		// Create layers in order from top to bottom
 		nLayerToolbar = CreateLayer();
@@ -160,25 +156,28 @@ public:
 		nLayerAxis = CreateLayer();
 		nLayerBackground = CreateLayer();
 
+		// Enable layers
 		EnableLayer(nLayerToolbar, true);
 		EnableLayer(nLayerCursor, true);
 		EnableLayer(nLayerGeometry, true);
 		EnableLayer(nLayerVisibilityPolygon, true);
+		EnableLayer(nLayerBouncingBall, true);
 		EnableLayer(nLayerAxis, true);
 		EnableLayer(nLayerBackground, true);
 
 		
-
 		return true;
 	}
 
 	// Run every frame
 	bool OnUserUpdate(float fElapsedTime) override
 	{	
-		// Clear default layers
+		// O------------------------------------------------------------------------------O
+		// | CLEAR ALL LAYERS                                                             |
+		// O------------------------------------------------------------------------------O
+		SetDrawTarget(nullptr);
 		Clear(olc::BLANK);
 
-		// Clear custom layers
 		SetDrawTarget(nLayerBackground);
 		Clear(color_Background);
 
@@ -197,9 +196,15 @@ public:
 		SetDrawTarget(nLayerVisibilityPolygon);
 		Clear(olc::BLANK);
 
+		SetDrawTarget(nLayerBouncingBall);
+		Clear(olc::BLANK);
+
 		SetDrawTarget(nullptr);
 
-		// Grab mouse position in screen and world space
+
+		// O------------------------------------------------------------------------------O
+		// | GRAB MOUSE POSITION AND CREATE A BOUNDING BOX                                |
+		// O------------------------------------------------------------------------------O
 		vMP_S = olc::vf2d{ float(GetMouseX()), float(GetMouseY()) };
 		vMP_W = s2w(vMP_S);
 		
@@ -216,26 +221,11 @@ public:
 		SetDrawTarget(nLayerGeometry);
 		for (int i = 0; i < segments.size(); i++)
 		{
-			olc::vf2d vStart = w2s(nodes[segments[i][0]]);
-			olc::vf2d vEnd   = w2s(nodes[segments[i][1]]);
-			
-			// Check if the segment is inside screen boundaries
-			bool bIsStartInside = vStart.x > vBL_S_ext.x && vStart.y < vBL_S_ext.y&& vStart.x < vTR_S_ext.x&& vStart.y > vTR_S_ext.y;
-			bool bIsEndInside = vEnd.x > vBL_S_ext.x && vEnd.y < vBL_S_ext.y&& vEnd.x < vTR_S_ext.x&& vEnd.y > vTR_S_ext.y;
-			if (bIsStartInside || bIsEndInside)
-			{	
-				DrawLine(vStart, vEnd, color_Line);
-			}
+			DrawLine(w2s(nodes[segments[i][0]]), w2s(nodes[segments[i][1]]), color_Line);
 		}
 		for (int i = 0; i < nodes.size(); i++)
 		{
-			olc::vf2d vNode = w2s(nodes[i]);
-
-			// Check if the node is inside screen boundaries
-			if (vNode.x > vBL_S_ext.x && vNode.y < vBL_S_ext.y && vNode.x < vTR_S_ext.x && vNode.y > vTR_S_ext.y)
-			{
-				FillCircle(vNode, 2, color_Node);
-			}
+			FillCircle(w2s(nodes[i]), 2, color_Node);
 		}
 		SetDrawTarget(nullptr);
 
@@ -243,7 +233,7 @@ public:
 		// O------------------------------------------------------------------------------O
 		// | DISPLAY NODES AND THEIR INFO                                                 |
 		// O------------------------------------------------------------------------------O
-		if (GetKey(olc::Key::I).bPressed)
+		if (GetKey(olc::Key::N).bPressed)
 		{
 			bDisplayLineSegmentInfo = !bDisplayLineSegmentInfo;
 		}
@@ -253,13 +243,8 @@ public:
 			for (int i = 0; i < nodes.size(); i++)
 			{	
 				olc::vf2d vNode = w2s(nodes[i]);
-
-				// Check if the node is inside screen boundaries
-				if (vNode.x > vBL_S_ext.x && vNode.y < vBL_S_ext.y && vNode.x < vTR_S_ext.x && vNode.y > vTR_S_ext.y)
-				{
-					FillCircle(vNode, 2, color_NodeInfo);
-					DrawString(vNode + olc::vi2d{ 5, 5 }, std::to_string(i), color_NodeInfo);
-				}
+				FillCircle(vNode, 2, color_NodeInfo);
+				DrawString(vNode + olc::vi2d{ 5, 5 }, std::to_string(i), color_NodeInfo);
 			}
 			SetDrawTarget(nullptr);
 		}
@@ -326,7 +311,6 @@ public:
 		// O------------------------------------------------------------------------------O
 		// | DISPLAY AXIS                                                                 |
 		// O------------------------------------------------------------------------------O
-		// Toogle the display mode
 		if (GetKey(olc::Key::A).bPressed)
 		{
 			bDisplayCoordinateSystem = !bDisplayCoordinateSystem;
@@ -350,7 +334,7 @@ public:
 			SetDrawTarget(nullptr);
 		}
 
-		
+
 		// O------------------------------------------------------------------------------O
 		// | ADD NODES                                                                    |
 		// O------------------------------------------------------------------------------O
@@ -360,7 +344,7 @@ public:
 		{
 			nMode = 1;
 		}
-		// Exist the "add nodes" mode
+		// Exit the "add nodes" mode
 		else if (nMode == 1  && (GetKey(olc::Key::K1).bPressed || GetKey(olc::Key::ESCAPE).bPressed))
 		{
 			nMode = 0;
@@ -699,7 +683,42 @@ public:
 			segments.clear();
 		}		
 
+
+		// O------------------------------------------------------------------------------O
+		// | CHECK FOR SELF-INTERSECTIONS                                                 |
+		// O------------------------------------------------------------------------------O
+		std::vector<olc::vf2d> intersections;
+		intersections.reserve(16);
+		// Find all line segment intersections
+		for (int i = 0; i < segments.size(); i++)
+		{	
+			for (int j = 0; j < segments.size(); j++)
+			{	
+				// Check for intersection
+				olc::vf2d vIntersectionPoint;
+				if (SegmentToSegmentIntersection(nodes[segments[i][0]], nodes[segments[i][1]],
+					                             nodes[segments[j][0]], nodes[segments[j][1]], &vIntersectionPoint))
+				{
+					intersections.push_back(vIntersectionPoint);
+				}
+			}
+		}
+		// Draw all intersections
+		if (GetKey(olc::Key::I).bPressed)
+		{
+			bDisplaySelfIntersections = !bDisplaySelfIntersections;
+		}
+		if (bDisplaySelfIntersections == true)
+		{
+			SetDrawTarget(nLayerGeometry);
+			for (int i = 0; i < intersections.size(); i++)
+			{
+				FillCircle(w2s(intersections[i]), 2, color_Intersection);
+			}
+			SetDrawTarget(nullptr);
+		}
 		
+
 		// O------------------------------------------------------------------------------O
 		// | VISIBILITY POLYGON                                                           |
 		// O------------------------------------------------------------------------------O
@@ -718,126 +737,76 @@ public:
 		{	
 			SetDrawTarget(nLayerVisibilityPolygon);
 
-			// Add screen edges to the list of nodes
-			std::vector<olc::vf2d> nodes_ext;
-			nodes_ext.reserve(nodes.size() + 4);
-			nodes_ext.push_back(vTL_W);
-			nodes_ext.push_back(vTR_W);
-			nodes_ext.push_back(vBR_W);
-			nodes_ext.push_back(vBL_W);
-			for (int i = 0; i < nodes.size(); i++)
+			// Compute The visibility polygon
+			std::vector<olc::vf2d> visibilityPolygon = VisibilityPolygon(vMP_W, vTL_W, vTR_W, vBR_W, vBL_W, nodes, segments, intersections);
+
+			// Compute screen coordinates of the nodes
+			for (int i = 0; i < visibilityPolygon.size(); i++)
 			{
-				nodes_ext.push_back(nodes[i]);
+				visibilityPolygon[i] = w2s(visibilityPolygon[i]);
 			}
-
-			// Add screen edges to the list of segments
-			std::vector<std::array<int, 2>> segments_ext;
-			segments_ext.reserve(segments.size() + 4);
-			segments_ext.push_back({ 0,1 });
-			segments_ext.push_back({ 1,2 });
-			segments_ext.push_back({ 2,3 });
-			segments_ext.push_back({ 3,0 });
-			for (int i = 0; i < segments.size(); i++)
-			{	
-				segments_ext.push_back({ segments[i][0] + 4, segments[i][1] + 4 });
-			}
-
-			// Create a list of rays 
-			std::vector<olc::vf2d> rays;
-			rays.reserve(nodes_ext.size() * 3 - 8);
-			for (int i = 0; i < 4; i++)
-			{
-				rays.push_back(nodes_ext[i]);
-			}
-			for (int i = 4; i < nodes_ext.size(); i++)
-			{
-				rays.push_back(RotatePoint(nodes_ext[i], -0.000001f, vMP_W));
-				rays.push_back(nodes_ext[i]);
-				rays.push_back(RotatePoint(nodes_ext[i], 0.000001f, vMP_W));
-			}
-
-			// Sort the rays by their angle relative to the mouse pointer
-			float angle = 0.0f;
-			std::vector<std::pair<olc::vf2d, float>> node_angle_pair;
-			node_angle_pair.reserve(rays.size());
-			for (int i = 0; i < rays.size(); i++)
-			{
-				angle = std::atan2(rays[i].y - vMP_W.y, rays[i].x - vMP_W.x);
-				node_angle_pair.push_back({rays[i], angle});
-			}
-			std::sort(node_angle_pair.begin(), node_angle_pair.end(), 
-				[](const std::pair<olc::vf2d, float> a, const std::pair<olc::vf2d, float> b) {return a.second > b.second; });
-
-			// Write the data back to rays
-			for (int i = 0; i < rays.size(); i++)
-			{
-				rays[i] = node_angle_pair[i].first;
-			}
-
-			// Loop over each ray
-			std::vector<olc::vf2d> vClosestIntersectionPoints;
-			vClosestIntersectionPoints.reserve(rays.size());
-			for (int i = 0; i < rays.size(); i++)
-			{	
-				// Closes intersection
-				std::vector<olc::vf2d> vRayIntersections;
-				std::vector<float> vRayIntersectionDistances;
-				vRayIntersections.reserve(1000);
-				vRayIntersectionDistances.reserve(1000);
-
-				// Loop over each line segment
-				for (int j = 0; j < segments_ext.size(); j++)
-				{	
-					olc::vf2d vStartPoint = nodes_ext[segments_ext[j][0]];
-					olc::vf2d vEndPoint   = nodes_ext[segments_ext[j][1]];
-					olc::vf2d vIntersectionPoint;
-
-					// Check for intersection
-					if (RayToSegmentIntersection(vMP_W, rays[i], vStartPoint, vEndPoint, &vIntersectionPoint))
-					{	
-						vRayIntersectionDistances.push_back(EuclideanDistanceSquared(vMP_W, vIntersectionPoint));
-						vRayIntersections.push_back(vIntersectionPoint);
-					}
-				}
-				if (vRayIntersections.size() == 1)
-				{	
-					vClosestIntersectionPoints.push_back(vRayIntersections[0]);
-
-					//DrawLine(vMP_S, w2s(vRayIntersections[0]), olc::WHITE);
-					//FillCircle(w2s(vRayIntersections[0]), 3, olc::GREEN);
-				}
-				if (vRayIntersections.size() > 1)
-				{
-					auto min = std::min_element(vRayIntersectionDistances.begin(), vRayIntersectionDistances.end());
-					int nIndex = min - vRayIntersectionDistances.begin();
-					vClosestIntersectionPoints.push_back(vRayIntersections[nIndex]);
-
-					//DrawLine(vMP_S, w2s(vRayIntersections[nIndex]), olc::WHITE);
-					//FillCircle(w2s(vRayIntersections[nIndex]), 3, olc::GREEN);
-				}
-			}
-
 			// Draw visibility polygon
-			for (int i = 0; i < vClosestIntersectionPoints.size(); i++)
+			for (int i = 0; i < visibilityPolygon.size()-1; i++)
 			{
-				vClosestIntersectionPoints[i] = w2s(vClosestIntersectionPoints[i]);
+				FillTriangle(vMP_S, visibilityPolygon[i], visibilityPolygon[i + 1], color_VisibilityPolygon);
 			}
-			for (int i = 0; i < vClosestIntersectionPoints.size()-1; i++)
-			{
-				FillTriangle(vMP_S, vClosestIntersectionPoints[i], vClosestIntersectionPoints[i + 1], color_VisibilityPolygon);
-			}
-			FillTriangle(vMP_S, vClosestIntersectionPoints.back(), vClosestIntersectionPoints.front(), color_VisibilityPolygon);
-			FillCircle(vMP_S, 2, olc::RED);
+			FillTriangle(vMP_S, visibilityPolygon.back(), visibilityPolygon.front(), color_VisibilityPolygon);
+			FillCircle(vMP_S, 3, olc::RED);
+			
+			SetDrawTarget(nullptr);
+		}
+		
+
+		// O------------------------------------------------------------------------------O
+		// | BOUNCING BALL                                                               |
+		// O------------------------------------------------------------------------------O
+		// Select the "bouncing ball" mode
+		if (nMode == 0 && GetKey(olc::Key::B).bPressed)
+		{
+			nMode = 8;
+		}
+		// Exit the "bouncing ball" mode
+		else if (nMode == 8 && (GetKey(olc::Key::B).bPressed || GetKey(olc::Key::ESCAPE).bPressed))
+		{
+			nMode = 0;
+		}
+		if (nMode == 8 && GetMouse(0).bHeld)
+		{
+			SetDrawTarget(nLayerBouncingBall);
+
+			
+			FillCircle(vMP_S, 3, olc::RED);
+
+
+			vBallPosition = vMP_W;
+
+			SetDrawTarget(nullptr);
+		}
+		if (nMode == 8)
+		{	
+			SetDrawTarget(nLayerBouncingBall);
+
+			// Draw the ball
+			FillCircle(w2s(vBallPosition), int(fBallRadius), olc::WHITE);
+
+			vBallPosition.y -= 1;
 
 			SetDrawTarget(nullptr);
 
 		}
 		
-		
-		
 
 
 		
+
+
+
+
+
+
+
+
+
 		// O------------------------------------------------------------------------------O
 		// | TOOLBAR INFORMATION                                                          |
 		// O------------------------------------------------------------------------------O
@@ -858,57 +827,60 @@ public:
 		DrawLine(olc::vi2d{ 0, 35 }, olc::vi2d{ mainToolbarWidth - 1, 35 }, olc::WHITE);
 
 		// Number of shapes, nodes, segments
-		std::string sNumNodes         = "# NODES          = " + std::to_string(nodes.size());
-		std::string sNumLines         = "# SEGMENTS       = " + std::to_string(segments.size());
-		std::string sNumIntersections = "# INTERSECTIONS  = " + std::to_string(intersections.size());
+		std::string sNumNodes = "# NODES    = " + std::to_string(nodes.size());
+		std::string sNumLines = "# SEGMENTS = " + std::to_string(segments.size());
 		DrawString(olc::vi2d{ 5, 40 }, sNumNodes, olc::WHITE);
 		DrawString(olc::vi2d{ 5, 50 }, sNumLines, olc::WHITE);
-		DrawString(olc::vi2d{ 5, 60 }, sNumIntersections, olc::WHITE);
-
 
 		// Divider line
-		DrawLine(olc::vi2d{ 0, 70 }, olc::vi2d{ mainToolbarWidth - 1, 70 }, olc::WHITE);
+		DrawLine(olc::vi2d{ 0, 60 }, olc::vi2d{ mainToolbarWidth - 1, 60 }, olc::WHITE);
 
 		// Display selection info
-		DrawString(olc::vi2d{ 5, 75  }, "[ ] DEFAULT           ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 85  }, "[1] ADD - NODE        ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 95  }, "[2] MOV - NODE        ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 105 }, "[3] DEL - NODE        ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 115 }, "[4] ADD - LINE        ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 125 }, "[5] MOV - LINE        ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 135 }, "[6] DEL - LINE        ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 65  }, "[ESC] CLEAR SELECTION ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 75  }, "[1]   NODE - ADD      ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 85  }, "[2]   NODE - MOVE     ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 95  }, "[3]   NODE - DELETE   ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 105 }, "[4]   LINE - ADD      ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 115 }, "[5]   LINE - MOVE     ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 125 }, "[6]   LINE - DELETE   ", olc::WHITE);
 		
-		// Highlight selected mode
-		if      (nMode == 0) { DrawString(olc::vi2d{ 5, 75  }, "[ ] DEFAULT           ", olc::RED); }
-		else if (nMode == 1) { DrawString(olc::vi2d{ 5, 85  }, "[1] ADD - NODE        ", olc::RED); }
-		else if (nMode == 2) { DrawString(olc::vi2d{ 5, 95  }, "[2] MOV - NODE        ", olc::RED); }
-		else if (nMode == 3) { DrawString(olc::vi2d{ 5, 105 }, "[3] DEL - NODE        ", olc::RED); }
-		else if (nMode == 4) { DrawString(olc::vi2d{ 5, 115 }, "[4] ADD - LINE        ", olc::RED); }
-		else if (nMode == 5) { DrawString(olc::vi2d{ 5, 125 }, "[5] MOV - LINE        ", olc::RED); }
-		else if (nMode == 6) { DrawString(olc::vi2d{ 5, 135 }, "[6] DEL - LINE        ", olc::RED); }
+		// Highlight the selected mode
+		if      (nMode == 0) { DrawString(olc::vi2d{ 5, 65  }, "[ESC] CLEAR SELECTION ", olc::RED); }
+		else if (nMode == 1) { DrawString(olc::vi2d{ 5, 75  }, "[1]   NODE - ADD      ", olc::RED); }
+		else if (nMode == 2) { DrawString(olc::vi2d{ 5, 85  }, "[2]   NODE - MOVE     ", olc::RED); }
+		else if (nMode == 3) { DrawString(olc::vi2d{ 5, 95  }, "[3]   NODE - DELETE   ", olc::RED); }
+		else if (nMode == 4) { DrawString(olc::vi2d{ 5, 105 }, "[4]   LINE - ADD      ", olc::RED); }
+		else if (nMode == 5) { DrawString(olc::vi2d{ 5, 115 }, "[5]   LINE - MOVE     ", olc::RED); }
+		else if (nMode == 6) { DrawString(olc::vi2d{ 5, 125 }, "[6]   LINE - DELETE   ", olc::RED); }
 
 		// Divider line
-		DrawLine(olc::vi2d{ 0, 145 }, olc::vi2d{ mainToolbarWidth - 1, 145 }, olc::WHITE);
-
-		// Display selection info
-		DrawString(olc::vi2d{ 5, 150 }, "[V] VISIBILITY POLYGON", olc::WHITE);
-
-		// Highlight selected mode
-		if       (nMode == 7) { DrawString(olc::vi2d{ 5, 150 }, "[V] VISIBILITY POLYGON", olc::RED); }
-
-		// Divider line
-		DrawLine(olc::vi2d{ 0, 160 }, olc::vi2d{ mainToolbarWidth - 1, 160}, olc::WHITE);
+		DrawLine(olc::vi2d{ 0, 135 }, olc::vi2d{ mainToolbarWidth - 1, 135 }, olc::WHITE);
 
 		// Display addition options
-		DrawString(olc::vi2d{ 5, 165 }, "[R] RESET PAN & ZOOM ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 175 }, "[A] SHOW AXIS        ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 185 }, "[I] SHOW NODE INFO   ", olc::WHITE);
-		DrawString(olc::vi2d{ 5, 195 }, "[C] CLEAR GEOMETRY   ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 140 }, "[R] RESET PAN & ZOOM  ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 150 }, "[A] SHOW AXIS         ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 160 }, "[N] SHOW NODE INFO    ", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 170 }, "[I] SHOW INTERSECTIONS", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 180 }, "[C] CLEAR GEOMETRY    ", olc::WHITE);
 
-		if (GetKey(olc::Key::R).bHeld) { DrawString(olc::vi2d{ 5, 165 }, "[R] RESET PAN & ZOOM ", olc::GREEN); }
-		if (bDisplayCoordinateSystem)  { DrawString(olc::vi2d{ 5, 175 }, "[A] SHOW AXIS        ", olc::GREEN); }
-		if (bDisplayLineSegmentInfo)   { DrawString(olc::vi2d{ 5, 185 }, "[I] SHOW NODE INFO   ", olc::GREEN); }
-		if (GetKey(olc::Key::C).bHeld) { DrawString(olc::vi2d{ 5, 195 }, "[C] CLEAR GEOMETRY   ", olc::GREEN); }
+		// Highlight the selected mode
+		if (GetKey(olc::Key::R).bHeld) { DrawString(olc::vi2d{ 5, 140 }, "[R] RESET PAN & ZOOM  ", olc::GREEN); }
+		if (bDisplayCoordinateSystem)  { DrawString(olc::vi2d{ 5, 150 }, "[A] SHOW AXIS         ", olc::GREEN); }
+		if (bDisplayLineSegmentInfo)   { DrawString(olc::vi2d{ 5, 160 }, "[N] SHOW NODE INFO    ", olc::GREEN); }
+		if (bDisplaySelfIntersections) { DrawString(olc::vi2d{ 5, 170 }, "[I] SHOW INTERSECTIONS", olc::GREEN); }
+		if (GetKey(olc::Key::C).bHeld) { DrawString(olc::vi2d{ 5, 180 }, "[C] CLEAR GEOMETRY    ", olc::GREEN); }
+
+		// Divider line
+		DrawLine(olc::vi2d{ 0, 190 }, olc::vi2d{ mainToolbarWidth - 1, 190 }, olc::WHITE);
+
+		// Display selection info
+		DrawString(olc::vi2d{ 5, 195 }, "[V] VISIBILITY POLYGON", olc::WHITE);
+		DrawString(olc::vi2d{ 5, 205 }, "[B] BOUNCING BALL     ", olc::WHITE);
+
+		// Highlight selected mode
+		if (nMode == 7) { DrawString(olc::vi2d{ 5, 195 }, "[V] VISIBILITY POLYGON", olc::RED); }
+		if (nMode == 8) { DrawString(olc::vi2d{ 5, 205 }, "[B] BOUNCING BALL     ", olc::RED); }
+
 
 		// Default draw target
 		SetDrawTarget(nullptr);

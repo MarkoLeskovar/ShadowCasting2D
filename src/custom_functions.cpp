@@ -158,7 +158,7 @@ bool SegmentToSegmentIntersection(const olc::vf2d& vA_start, const olc::vf2d& vA
 	float t = (s32_x * (p0_y - p2_y) - s32_y * (p0_x - p2_x)) / (-s32_x * s10_y + s10_x * s32_y);
 
 	// Intersection detected
-	if (s >= 0.0f && s <= 1.0f && t >= 0.0f && t <= 1.0f)
+	if (s > 0.0f && s < 1.0f && t > 0.0f && t < 1.0f)
 	{
 		olc::vf2d vTemp;
 		vTemp.x = p0_x + (t * s10_x);
