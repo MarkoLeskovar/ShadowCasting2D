@@ -29,7 +29,7 @@ class Plane2D : public olc::PixelGameEngine
 public:
 	Plane2D()
 	{
-		sAppName = "SIMPLE CAD APPLICATION";
+		sAppName = "Shadow Casting 2D";
 	}
 
 private: // Drawing rutine coordinate transformations
